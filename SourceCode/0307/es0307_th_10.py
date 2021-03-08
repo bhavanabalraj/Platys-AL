@@ -168,7 +168,7 @@ class Network(nn.Module):
 
         # Hidden layer with Leaky ReLU activation
         x = self.activation(self.h1(x))
-        # x = self.activation(self.h2(x))
+        x = self.activation(self.h2(x))
 
         # Output layer
         x = self.output(x)
@@ -582,7 +582,7 @@ def stratify_samples(y_unlabelled_AL, sample_indices, threshold):
     return list(stratified_sample_indicies), rest_of_indices
 
 def train_AL(X_unlabelled, y_unlabelled, X_test, y_test, M_unlabelled, M_test ,\
-             model, sample_strategy = 'random', threshold = 10, sample_size=50):
+             model, sample_strategy = 'random', threshold = 4, sample_size=50):
 
     X_train =  torch.zeros(0)
     y_train =  torch.zeros(0)
