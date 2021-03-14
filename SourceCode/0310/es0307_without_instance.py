@@ -207,8 +207,8 @@ def trainAndTestModel(model, X_train, y_train, X_test, y_test, train_weights):
             batch_weights = train_weights[i:i+batch_size]
 
             log_ps = model(batch_x)
-            loss = myLoss(model, log_ps.squeeze(), batch_y, batch_weights)
-            # loss = criterion(log_ps.squeeze(), batch_y)
+            # loss = myLoss(model, log_ps.squeeze(), batch_y, batch_weights)
+            loss = criterion(log_ps.squeeze(), batch_y)
             loss.backward()
             optimizer.step()
 

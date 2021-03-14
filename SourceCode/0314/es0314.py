@@ -220,12 +220,13 @@ def trainAndTestModel(model, X_train, y_train, X_test, y_test, train_weights):
             print("Epoch: {}/{}".format(e+1, epochs))
             print("Training Loss: {:.3f}".format(running_loss/trainLoaderSize))
 
-            ba, sen, spec, pre, f_score, test_loss \
+            ba, sen, spec, pre, f_score, test_loss, lwtp \
             = validateModel(model, X_test, y_test)
+
 
         lre = lre - ((0.1 - 0.01) /epochs)
 
-    return ba, sen, spec, pre, f_score, test_loss
+    return ba, sen, spec, pre, f_score, test_loss, lwtp
 
 def validateModel(model, X_test, y_test):
 
@@ -235,6 +236,7 @@ def validateModel(model, X_test, y_test):
         fp = 0.
         tn = 0.
         fn = 0.
+        label_wise_tp = torch.zeros(y_test.size()[1])
 
         testLoaderSize = len(X_test)/batch_size
         for i in range(0, X_test.size()[0], batch_size):
@@ -262,6 +264,8 @@ def validateModel(model, X_test, y_test):
                 tn += torch.sum(np.logical_and(np.logical_not(probs),np.logical_not(batch_y)));
                 fp += torch.sum(np.logical_and(probs,np.logical_not(batch_y)));
                 fn += torch.sum(np.logical_and(np.logical_not(probs),batch_y));
+
+                label_wise_tp += torch.sum(np.logical_and(probs, batch_y), dim=0)
 
         model.train()
 
@@ -300,7 +304,7 @@ def validateModel(model, X_test, y_test):
         #      "Test Accuracy: {:.3f}".format(accuracy/testLoaderSize))
 
         return balanced_accuracy, sensitivity, specificity, precision, f_score,\
-                    test_loss
+                    test_loss, label_wise_tp
 
 def plot_loss(train_loss, test_loss, title, x_axis, y_axis):
 
@@ -315,19 +319,31 @@ def plot_loss(train_loss, test_loss, title, x_axis, y_axis):
 
     # plt.show()
 
-def plot_balanced_accuracy(accuracy_values, title = 'iterations'):
+def plot_balanced_accuracy(accuracy_values, title = 'Balanced Accuracy'):
 
-    plt.xlabel(title)
+    plt.xlabel('iterations')
     plt.ylabel('BA')
-    plt.title('Balanced Accuracy')
+    plt.title(title)
     plt.plot(accuracy_values)
+    # plt.show()
+
+def plot_lwtp(tp_values, iter, sample_strategy, title = 'Label wise TP'):
+
+    plt.xlabel('Labels')
+    plt.ylabel('lwtp')
+    plt.title(title)
+
+    for i in range(0, (len(label_names)), 15):
+        plt.bar(label_names[i:i+15], tp_values[i:i+15])
+        plt.savefig('lwtp_' + sample_strategy + '_' + str(iter) + '_' + str(i) + '.png')
+        plt.clf()
     # plt.show()
 
 def plot_labelled_metrics(labelled_examples, accuracy_values, sensitivity_values,
                      specificity_values, precision_values, f_score_values, \
                       plot_label, title = 'Metrics',):
 
-    plt.plot(labelled_examples, accuracy_values, label='BA')
+    plt.plot(labelled_examples, accuracy_values, label='Accuracy')
     plt.plot(labelled_examples, sensitivity_values, label='Sensitivity')
     plt.plot(labelled_examples, specificity_values, label='Specificity')
     plt.plot(labelled_examples, precision_values, label='Precision')
@@ -523,6 +539,7 @@ def train_without_AL(X_train, y_train, X_test, y_test, M_train, M_test, model):
     plot_loss(train_losses, test_losses, 'Loss', 'iterations', 'loss')
     plt.savefig('Full_supervised_loss.png')
     plt.clf()
+
     plot_balanced_accuracy(accuracies, 'BA without AL')
     plt.savefig('Full_supervised_ba.png')
     plt.clf()
@@ -538,14 +555,106 @@ X = X.iloc[:, np.r_[0:52, 83:181, 183:209]]
 X[np.isnan(X)] = 0.
 Y[np.isnan(Y)] = 0.
 
+
+X = X[0:100000]
+Y = Y[0:100000]
+
 X_train, y_train, X_test, y_test, M_train, M_test = test_train_split(X, Y, M)
 
-model_full_supervised = Network()
-train_without_AL(X_train, y_train, X_test, y_test, M_train, M_test, model_full_supervised)
+print('Length of train set:', len(X_train), ' ', len(y_train))
+print('Length of test set:', len(X_test), ' ', len(y_test))
+
+from skmultilearn.cluster import LabelCooccurrenceGraphBuilder
+
+graph_builder = LabelCooccurrenceGraphBuilder(weighted=True,
+                                              include_self_edges=False)
+
+from skmultilearn.ensemble import LabelSpacePartitioningClassifier
+from sklearn.ensemble import RandomForestClassifier
+from skmultilearn.problem_transform import BinaryRelevance
+
+from skmultilearn.cluster.networkx import NetworkXLabelGraphClusterer
+from sklearn import metrics
+
+classifier = LabelSpacePartitioningClassifier(
+    classifier = BinaryRelevance(
+    classifier = RandomForestClassifier(),
+    require_dense = [False, True]
+),
+    clusterer  = NetworkXLabelGraphClusterer(graph_builder, method='louvain')
+)
+
+classifier.fit(X_train, y_train)
+
+y_pred=classifier.predict(X_test)
+
+f1 = metrics.f1_score(y_test, y_pred, average='micro')
+hamm = metrics.hamming_loss(y_test, y_pred)
+# ba = metrics.balanced_accuracy_score(y_test, y_pred)
+
+print(metrics.classification_report(y_test, y_pred))
+
+print('Label Space Partition F1-score:',round(f1,3))
+print('Label Space Partition Hamming Loss:',round(hamm,3))
+# print('Label Space Partition Balanced Accuracy:',round(ba,3))
 
 X_unlabelled = X_train
 y_unlabelled = y_train
 M_unlabelled = M_train
+
+def LabelSpacePartition_AL(X_unlabelled, y_unlabelled, X_test, y_test,
+             sample_strategy = 'random', sample_size=50):
+
+    X_train =  torch.zeros(0)
+    y_train =  torch.zeros(0)
+    M_train = torch.zeros(0)
+
+    classifier = LabelSpacePartitioningClassifier(
+        classifier = BinaryRelevance(
+        classifier = RandomForestClassifier(),
+        require_dense = [False, True]
+    ),
+        clusterer  = NetworkXLabelGraphClusterer(graph_builder, method='louvain')
+    )
+
+    iter = 1
+    labelled_size = 0
+
+    while X_train.size()[0] < X_unlabelled.size()[0]:
+    # while labelled_size < 10000:
+
+        print("Active Learning Iteration: ", iter, "Sampling strategy: ", sample_strategy)
+
+        sample_indices = sample_unlabelled_data(classifier, X_unlabelled.float(), sample_strategy)
+
+        X_train = torch.cat((X_train, X_unlabelled[sample_indices[:sample_size]]), 0)
+        y_train = torch.cat((y_train, y_unlabelled[sample_indices[:sample_size]]), 0)
+        M_train = torch.cat((M_train, M_unlabelled[sample_indices[:sample_size]]), 0)
+
+        labelled_size += sample_size
+
+        classifier.fit(X_train, y_train)
+
+        y_pred=classifier.predict(X_test)
+
+        f1 = metrics.f1_score(y_test, y_pred, average='micro')
+        hamm = metrics.hamming_loss(y_test, y_pred)
+        ba = metrics.balanced_accuracy_score(y_test, y_pred)
+
+        print('Label Space Partition F1-score:',round(f1,3))
+        print('Label Space Partition Hamming Loss:',round(hamm,3))
+        print('Label Space Partition Balanced Accuracy:',round(ba,3))
+
+        X_unlabelled = X_unlabelled[sample_indices[sample_size:]]
+        y_unlabelled = y_unlabelled[sample_indices[sample_size:]]
+
+        M_unlabelled = M_unlabelled[sample_indices[sample_size:]]
+
+        print("Total number of labelled samples %d" % (X_train.size()[0]))
+
+        iter = iter + 1
+
+# LabelSpacePartition_AL(X_unlabelled, y_unlabelled, X_test, y_test, random, 500)
 
 def describe_data(Y, iter):
     n_examples_per_label = torch.sum(Y,dim=0);
@@ -559,9 +668,6 @@ def describe_data(Y, iter):
 
     plt.figure(figsize=(20,10))
     plt.bar(label_names, n_examples_per_label)
-
-    for index, value in enumerate(n_examples_per_label.tolist()):
-        plt.text(value, index, str(value))
 
 def stratify_samples(y_unlabelled_AL, sample_indices, threshold):
 
@@ -609,7 +715,7 @@ def train_AL(X_unlabelled, y_unlabelled, X_test, y_test, M_unlabelled, M_test ,\
     default_sample_size = sample_size
 
     # while X_train.size()[0] < X_unlabelled.size()[0]:
-    while labelled_size < 20000:
+    while labelled_size < 10000:
 
         print("Active Learning Iteration: ", iter, "Sampling strategy: ", sample_strategy)
 
@@ -655,10 +761,12 @@ def train_AL(X_unlabelled, y_unlabelled, X_test, y_test, M_unlabelled, M_test ,\
         instance_weights_train = get_class_weights(y_train, M_train)
 
         # Train and Evaluate Model
-        ba, sen, spec, pre, f_score, test_loss = trainAndTestModel(model, \
+        ba, sen, spec, pre, f_score, test_loss, lwtp = trainAndTestModel(model, \
                                         X_train.float(), y_train, \
                                           X_test.float(), y_test, \
                       instance_weights_train)
+
+        plot_lwtp(lwtp, iter, sample_strategy)
 
         AL_accuracies.append(ba)
         AL_Sen.append(sen)
@@ -674,29 +782,6 @@ def train_AL(X_unlabelled, y_unlabelled, X_test, y_test, M_unlabelled, M_test ,\
 
     return labelled_examples, AL_accuracies, AL_Sen, AL_Spec, AL_precision, \
     AL_f_score
-
-
-# Create model params and config
-model_avg_prob = Network()
-#
-# labelled_examples, ba_avg_prob, sen_avg_prob, spec_avg_prob, precision_avg_prob, \
-#                     f_score_avg_prob = train_AL_validate_unlabelled(X, Y, M, \
-#                                           model = model_avg_prob, \
-#                                           sample_strategy = 'avg_prob', \
-#                                           sample_size=1000)
-#
-# labelled_examples, ba_avg_prob, sen_avg_prob, spec_avg_prob, precision_avg_prob, \
-#                     f_score_avg_prob = train_AL(X_unlabelled, y_unlabelled, X_test, \
-#                                         y_test, M_unlabelled, M_test,
-#                                         model = model_avg_prob, \
-#                                         sample_strategy = 'avg_prob', \
-#                                         sample_size=1000)
-#
-# plot_labelled_metrics(labelled_examples, ba_avg_prob, sen_avg_prob, spec_avg_prob, \
-#                       precision_avg_prob, f_score_avg_prob, plot_label='Avg_prob')
-#
-# plt.savefig('AL_validate_unlabelled_avg_prob.png')
-# plt.clf()
 
 
 # Create model params and config
@@ -707,215 +792,26 @@ model_random = Network()
 #                                         sample_strategy = 'random', \
 #                                         sample_size=1000)
 
-labelled_examples, ba_random, sen_random, spec_random, precision_random, \
-                f_score_random = train_AL(X_unlabelled, y_unlabelled, X_test, \
-                                        y_test, M_unlabelled, M_test,
-                                        model = model_random, \
-                                        sample_strategy = 'random', \
-                                        sample_size=500)
-
-plot_labelled_metrics(labelled_examples, ba_random, sen_random, spec_random, \
-                      precision_random, f_score_random, plot_label='Random')
-
-plt.savefig('AL_validate_unlabelled_random.png')
-plt.clf()
-
-model_max_margin = Network()
-
-# labelled_examples, ba_min_max = train_AL(X, Y, M, model = model_min_max, \
-#                                          sample_strategy = 'max_margin', \
-#                                          sample_size=1000)
-
-# labelled_examples, ba_max, sen_max, spec_max, precision_max, \
-#                 f_score_max = train_AL(X_unlabelled, y_unlabelled, X_test, \
+# labelled_examples, ba_random, sen_random, spec_random, precision_random, \
+#                 f_score_random = train_AL(X_unlabelled, y_unlabelled, X_test, \
 #                                         y_test, M_unlabelled, M_test,
-#                                         model = model_max_margin, \
-#                                         sample_strategy = 'max_margin', \
-#                                         sample_size=1000)
+#                                         model = model_random, \
+#                                         sample_strategy = 'random', \
+#                                         sample_size=500)
+
+# plot_labelled_metrics(labelled_examples, ba_random, sen_random, spec_random, \
+#                       precision_random, f_score_random, plot_label='Random')
 #
-# plot_labelled_metrics(labelled_examples, ba_max, sen_max, spec_max, precision_max, \
-#                 f_score_max, plot_label='Max_Margin')
-#
-# plt.savefig('AL_validate_unlabelled_max.png')
+# plt.savefig('AL_validate_unlabelled_random.png')
 # plt.clf()
 
-# Create model params and config
-model_lcp = Network()
 
-# labelled_examples, ba_lpc, sen_lpc, spec_lpc, precision_lpc, \
-#                 f_score_lpc = train_AL_validate_unlabelled(X, Y, M, model = model_random, \
-#                                         sample_strategy = 'random', \
-#                                         sample_size=1000)
-
-# labelled_examples, ba_lcp, sen_lcp, spec_lcp, precision_lcp, \
-#                 f_score_lcp = train_AL(X_unlabelled, y_unlabelled, X_test, \
-#                                         y_test, M_unlabelled, M_test,
-#                                         model = model_lcp, \
-#                                         sample_strategy = 'lcp', \
-#                                         sample_size=1000)
-#
-# plot_labelled_metrics(labelled_examples, ba_lcp, sen_lcp, spec_lcp, \
-#                       precision_lcp, f_score_lcp, plot_label='LCP')
-#
-# plt.savefig('AL_validate_unlabelled_lcp.png')
-# plt.clf()
-
-model_entropy = Network()
-
-# labelled_examples, ba_lpc, sen_lpc, spec_lpc, precision_lpc, \
-#                 f_score_lpc = train_AL_validate_unlabelled(X, Y, M, model = model_random, \
-#                                         sample_strategy = 'random', \
-#                                         sample_size=1000)
-
-labelled_examples, ba_entropy, sen_entropy, spec_entropy, precision_entropy, \
-                f_score_entropy = train_AL(X_unlabelled, y_unlabelled, X_test, \
-                                        y_test, M_unlabelled, M_test,
-                                        model = model_entropy, \
-                                        sample_strategy = 'entropy', \
-                                        sample_size=500)
-
-plot_labelled_metrics(labelled_examples, ba_entropy, sen_entropy, spec_entropy, \
-                      precision_entropy, f_score_entropy, plot_label='Entropy')
-
-plt.savefig('AL_validate_unlabelled_entropy.png')
-plt.clf()
-
-plot_labelled_ba(labelled_examples, ba_random, plot_label='Random')
+# plot_labelled_ba(labelled_examples, ba_random, plot_label='Random')
 # plot_labelled_ba(labelled_examples, ba_avg_prob, plot_label='Avg_prob')
 # plot_labelled_ba(labelled_examples, ba_max, plot_label='Max_Margin')
 # plot_labelled_ba(labelled_examples, ba_lcp, plot_label='LCP')
-plot_labelled_ba(labelled_examples, ba_entropy, plot_label='Entropy')
+# plot_labelled_ba(labelled_examples, ba_entropy, plot_label='Entropy')
 
-plt.savefig('AL_validate_unlabelled.png')
-plt.clf()
 
-def train_AL_validate_unlabelled(X, Y, M,\
-             model, sample_strategy = 'random', sample_size=50):
-
-    M = np.isnan(Y)
-
-    X[np.isnan(X)] = 0.
-    Y[np.isnan(Y)] = 0.
-
-    X_unlabelled = torch.tensor(X.values, dtype=torch.float32)
-    (mean_vec,std_vec) = estimate_standardization_params(X_unlabelled);
-    X_unlabelled = standardize_features(X_unlabelled, mean_vec, std_vec);
-    y_unlabelled = torch.tensor(Y.values, dtype=torch.float32)
-
-    M_unlabelled = torch.tensor(M.values, dtype=torch.float32)
-
-    X_train =  torch.zeros(0)
-    y_train =  torch.zeros(0)
-    M_train = torch.zeros(0)
-
-    iter = 1
-
-    AL_accuracies, AL_test_loss, labelled_examples = [], [], []
-    AL_Sen, AL_Spec, AL_precision, AL_f_score = [], [], [], []
-
-    stopping_size = (int)(0.3 * len(X))
-
-    while X_unlabelled.size()[0] > stopping_size:
-    # while iter < 3:
-
-        print("Active Learning Iteration: ", iter, "Sample Strategy", sample_strategy)
-        iter = iter + 1
-
-        sample_indices = sample_unlabelled_data(model, X_unlabelled.float(), sample_strategy)
-
-        X_train = torch.cat((X_train, X_unlabelled[sample_indices[:sample_size]]), 0)
-        y_train = torch.cat((y_train, y_unlabelled[sample_indices[:sample_size]]), 0)
-        M_train = torch.cat((M_train, M_unlabelled[sample_indices[:sample_size]]), 0)
-
-        X_unlabelled = X_unlabelled[sample_indices[sample_size+1:]]
-        y_unlabelled = y_unlabelled[sample_indices[sample_size+1:]]
-
-        M_unlabelled = M_unlabelled[sample_indices[sample_size+1:]]
-
-        print("Length of test set: ", len(X_unlabelled))
-
-        # weights = calcWeights(y_train)
-        # criterion = nn.BCEWithLogitsLoss(pos_weight=weights)
-        instance_weights_train = get_class_weights(y_train, M_train)
-
-        # Train and Evaluate Model
-        ba, sen, spec, pre, f_score, test_loss = trainAndTestModel(model, \
-                                        X_train.float(), y_train, \
-                                          X_unlabelled.float(), y_unlabelled, \
-                      instance_weights_train)
-
-        AL_accuracies.append(ba)
-        AL_Sen.append(sen)
-        AL_Spec.append(spec)
-        AL_precision.append(pre)
-        AL_f_score.append(f_score)
-        AL_test_loss.append(test_loss)
-        labelled_examples.append(X_train.size()[0])
-
-        print("Total number of labelled samples %d" % (X_train.size()[0]))
-
-    return labelled_examples, AL_accuracies, AL_Sen, AL_Spec, AL_precision, \
-    AL_f_score
-
-def train_AL_per_user(num_of_users = 5):
-
-    for i in range(num_of_users):
-
-        print('************************* USER ' + str(i) + '***********************')
-
-        uuid = users[i]
-        X = pd.DataFrame()
-        Y = pd.DataFrame()
-        timestamps = pd.DataFrame()
-        M = pd.DataFrame()
-
-        (X_temp,Y_temp,timestamp_temp,M_temp,feature_names,label_names) = read_user_data(uuid)
-        X = X.append(X_temp)
-        Y = Y.append(Y_temp)
-        timestamps = timestamps.append(timestamp_temp)
-        M = M.append(M_temp)
-
-        M = np.isnan(Y)
-        X[np.isnan(X)] = 0.
-        Y[np.isnan(Y)] = 0.
-
-        X_unlabelled, y_unlabelled, X_test, y_test, M_unlabelled, M_test = \
-                                                    test_train_split(X, Y, M)
-
-        model_random = Network()
-
-        labelled_examples, ba_random, sen_random, spec_random, precision_random, \
-                f_score_random = train_AL(X_unlabelled, y_unlabelled, X_test, \
-                                        y_test, M_unlabelled, M_test,
-                                        model = model_random, \
-                                        sample_strategy = 'random', \
-                                        sample_size=1000)
-
-        plot_labelled_metrics(labelled_examples, ba_random, sen_random, spec_random, \
-                      precision_random, f_score_random, plot_label='Random')
-
-        plt.savefig(str(i) + '_random.png')
-        plt.clf()
-
-        model_avg_prob = Network()
-
-        labelled_examples, ba_avg_prob, sen_avg_prob, spec_avg_prob, precision_avg_prob, \
-                    f_score_avg_prob = train_AL(X_unlabelled, y_unlabelled, X_test, \
-                                        y_test, M_unlabelled, M_test,
-                                        model = model_avg_prob, \
-                                        sample_strategy = 'avg_prob', \
-                                        sample_size=1000)
-
-        plot_labelled_metrics(labelled_examples, ba_avg_prob, sen_avg_prob, spec_avg_prob, \
-                              precision_avg_prob, f_score_avg_prob, plot_label='Avg_prob')
-
-        plt.savefig(str(i) + '_avg_prob.png')
-        plt.clf()
-
-        plot_labelled_ba(labelled_examples, ba_random, plot_label='Random')
-        plot_labelled_ba(labelled_examples, ba_avg_prob, plot_label='Avg_prob')
-
-        plt.savefig(str(i) + '_random_vs_avg.png')
-        plt.clf()
-
-# train_AL_per_user(5)
+# plt.savefig('AL_validate_unlabelled.png')
+# plt.clf()

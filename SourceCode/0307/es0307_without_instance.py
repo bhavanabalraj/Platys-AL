@@ -207,8 +207,8 @@ def trainAndTestModel(model, X_train, y_train, X_test, y_test, train_weights):
             batch_weights = train_weights[i:i+batch_size]
 
             log_ps = model(batch_x)
-            loss = myLoss(model, log_ps.squeeze(), batch_y, batch_weights)
-            # loss = criterion(log_ps.squeeze(), batch_y)
+            # loss = myLoss(model, log_ps.squeeze(), batch_y, batch_weights)
+            loss = criterion(log_ps.squeeze(), batch_y)
             loss.backward()
             optimizer.step()
 
@@ -558,10 +558,7 @@ def describe_data(Y, iter):
     #     pass;
 
     plt.figure(figsize=(20,10))
-    plt.bar(label_names, n_examples_per_label)
-
-    for index, value in enumerate(n_examples_per_label.tolist()):
-        plt.text(value, index, str(value))
+    plt.bar(label_names, n_examples_per_label, str(n_examples_per_label))
 
 def stratify_samples(y_unlabelled_AL, sample_indices, threshold):
 
@@ -780,14 +777,14 @@ plot_labelled_metrics(labelled_examples, ba_entropy, sen_entropy, spec_entropy, 
 plt.savefig('AL_validate_unlabelled_entropy.png')
 plt.clf()
 
-plot_labelled_ba(labelled_examples, ba_random, plot_label='Random')
+# plot_labelled_ba(labelled_examples, ba_random, plot_label='Random')
 # plot_labelled_ba(labelled_examples, ba_avg_prob, plot_label='Avg_prob')
 # plot_labelled_ba(labelled_examples, ba_max, plot_label='Max_Margin')
 # plot_labelled_ba(labelled_examples, ba_lcp, plot_label='LCP')
-plot_labelled_ba(labelled_examples, ba_entropy, plot_label='Entropy')
-
-plt.savefig('AL_validate_unlabelled.png')
-plt.clf()
+# plot_labelled_ba(labelled_examples, ba_entropy, plot_label='Entropy')
+#
+# plt.savefig('AL_validate_unlabelled.png')
+# plt.clf()
 
 def train_AL_validate_unlabelled(X, Y, M,\
              model, sample_strategy = 'random', sample_size=50):
